@@ -3,6 +3,7 @@
   "version": "1.0.1",
   "description": "Now I’m the model of a modern major general / The venerated Virginian veteran whose men are all / Lining up, to put me up on a pedestal / Writin’ letters to relatives / Embellishin’ my elegance and eloquence / But the elephant is in the room / The truth is in ya face when ya hear the British cannons go / BOOM",
   "keywords": [],
+  "private": true,
   "author": "Isman Usoh <isman.usoh@gmail.com>",
   "license": "ISC",
   "main": "lib/app.js",
@@ -21,6 +22,6 @@
     "test": "echo \"Error: run tests from root\" && exit 1"
   },
   "dependencies": {
-    "isman-usoh-lerna-demo-common": "^1.0.1"
+    "lerna-package": "^1.0.1"
   }
 }
