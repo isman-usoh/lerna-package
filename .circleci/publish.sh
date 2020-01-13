@@ -6,33 +6,28 @@ git config user.email isman.usoh@gmail.com
 # lerna publish --yes --canary --preid dev
 # lerna publish --yes --canary --preid uat
 
-case $GIT_COMMIT_MSG in
-\[FEATURE\]*)
-  case $CIRCLE_BRANCH in
-  master)
-    Message="Publish Feature to PROD";;
-  uat)
-    Message="Publish Feature to UAT";;
+case $CIRCLE_BRANCH in
+master)
+  case $GIT_COMMIT_MSG in
+  \[FEATURE\]*)
+    Message="Master Feature";;
+  \[FIXED\]*)
+    lerna 
+    Message="Master Fixed";;
   *)
-    Message="Publish Feature to DEV";;
-  esac;;
-\[FIXED\]*)
-  case $CIRCLE_BRANCH in
-  master)
-    Message="Publish Fixed to PROD";;
-  uat)
-    Message="Publish Fixed to UAT";;
-  *)
-    Message="Publish Fixed to DEV";;
-  esac;;
+    Message="Master Fixed";;
+  esac
+  ;;
 *)
-  case $CIRCLE_BRANCH in
-  master)
-    Message="Publish Default to PROD";;
-  uat)
-    Message="Publish Default to UAT";;
-  *)
-    Message="Publish Default to DEV";;
-  esac;;
+  Message="Default";;
 esac
+
 echo $Message
+
+# case $GIT_COMMIT_MSG in
+# \[FEATURE\]*)
+#   Message="Publish Feature to PROD";;
+# \[FIXED\]*)
+#   Message="Publish Feature to PROD";;
+# *)
+# esac
