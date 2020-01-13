@@ -1,0 +1,537 @@
+############################################
+########### Validate Standard ##############
+############################################
+ignore_all_main_branches: &ignore_all_main_branches
+  branches:
+    ignore:
+      - dev
+      - uat
+      - master
+
+only_all_main_branches: &only_all_main_branches
+  branches:
+    only:
+      - dev
+      - uat
+      - master
+
+requires_proper_branch_check: &requires_proper_branch_check
+  requires:
+    - check_proper_branch_dev
+    - check_proper_branch_uat
+    - check_proper_branch_prd
+
+requires_steps: &requires_steps
+  requires:
+    - lint_test_build
+
+filters_only_release_tag: &filters_only_release_tag
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /^release@v[\d]+.[\d]+.[\d]+/
+############################################
+########### CircleCI Context ###############
+############################################
+context_dev: &context_dev
+  context: wise-platform-dev
+
+context_uat: &context_uat
+  context: wise-platform-uat
+
+context_prd: &context_prd
+  context: wise-platform-prd
+
+filters_only_dev_tag: &filters_only_dev_tag
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /^dev-release@v[\d]+.[\d]+.[\d]+/
+
+filters_only_uat_tag: &filters_only_uat_tag
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /^uat-release@v[\d]+.[\d]+.[\d]+/
+
+filters_only_prd_tag: &filters_only_prd_tag
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /^prd-release@v[\d]+.[\d]+.[\d]+/
+
+filters_dev: &filters_dev
+  filters:
+    branches:
+      only:
+        - dev
+        - /^hotfix\/.*/
+
+filters_uat: &filters_uat
+  filters:
+    branches:
+      only:
+        - uat
+
+filters_prd: &filters_prd
+  filters:
+    branches:
+      only:
+        - master
+
+###################################################
+########## Cache Workspace Dependencies ###########
+###################################################
+restore_cache: &restore_cache
+  restore_cache:
+    name: Restore Yarn Package Cache
+    keys:
+      - yarn-packages-{{ checksum "yarn.lock" }}
+# Don't forget to update these paths when add/remove packages
+save_cache: &save_cache
+  save_cache:
+    name: Save Yarn Package Cache
+    key: yarn-packages-{{ checksum "yarn.lock" }}
+    paths:
+      - /usr/local/share/.cache/yarn/v4
+
+#######################################################################
+#######################################################################
+##################### CircleCI Configuration ##########################
+#######################################################################
+#######################################################################
+version: 2.1
+executors:
+  default:
+    docker:
+      - image: circleci/node:10
+  wisekingdom:
+    docker:
+      - image: wisekingdom/ci-runner:latest
+#######################################################################
+########### Declare reused commands with various parameters ###########
+#######################################################################
+commands:
+  yarn_install:
+    steps:
+      - run: yarn install --frozen-lockfile
+
+  packages_npmrc_setup:
+    steps:
+      - run:
+          name: Write .npmrc file to publish or install private packages
+          command: |
+            echo ${NPMRC_READ} | tee \
+              .npmrc \
+              packages/backend/.npmrc \
+              packages/scoreup/.npmrc \
+              packages/scoreup-admin/.npmrc
+
+  publish_packages:
+    parameters:
+      semvar:
+        type: string
+      stage:
+        type: string
+    steps:
+      - run:
+          name: Set git username, email and .npmrc to publish
+          command: |
+            git config user.name circleci
+            git config user.email stampz74@gmail.com
+            echo ${NPMRC_WRITE} | tee \
+              .npmrc \
+              packages/backend-client-api/.npmrc \
+              packages/components/.npmrc \
+              packages/modules/.npmrc
+      - run:
+          name: Commit changes before publish packages to avoid lerna error
+          command: |
+            git commit -am "$(git -c color.status=false status)" || true
+      - run:
+          name: Publish package with custom tags
+          command: lerna publish << parameters.semvar >> --conventional-commits --yes --tag-version-prefix='<< parameters.stage >>@v'
+
+  create_config_yaml:
+    parameters:
+      template:
+        type: string
+      config:
+        type: string
+    steps:
+      - run:
+          name: Replace variable from template with CircleCI environment variables
+          command: envsubst "`printf '${%s} ' $(sh -c "env|cut -d'=' -f1")`" < << parameters.template >> > << parameters.config >>
+
+  check_proper_branch:
+    parameters:
+      branch:
+        type: string
+    steps:
+      - run:
+          name: Check if this branch is allowed
+          command: |
+            # Get branch name which contains this tag
+            export CIRCLE_BRANCH=$(git branch --contain HEAD --all | grep remotes/origin | grep -v remotes/origin/HEAD | cut -d '/' -f3-)
+            # Check if this branch matches with our expectation
+            if [ "${CIRCLE_BRANCH}" != "<< parameters.branch >>" ]; then
+              echo "Require branch [<< parameters.branch >>] to be executed but receive [${CIRCLE_BRANCH}] instead"
+              exit 1
+            fi
+
+  gcloud_setup:
+    parameters:
+      staging:
+        type: string
+    steps:
+      - run:
+          name: Install lib for create .env from googlesheet
+          command: npm i dotenv googleapis
+      - run:
+          name: Set gcloud service account
+          command: |
+            yarn run env:<< parameters.staging >>
+            source .env && export $(cut -d= -f1 .env)
+            echo $(echo ${GCLOUD_SERVICE_ACCOUNT} | base64 -d) | gcloud auth activate-service-account --key-file=-
+            gcloud --quiet config set project ${GCLOUD_PROJECT_ID}
+            gcloud --quiet config set compute/zone ${GCLOUD_COMPUTE_ZONE}
+      - run: cat packages/backend/.env
+      - run: cat packages/scoreup/.env
+      - run: cat packages/scoreup-admin/.env
+      - run: cat .env
+
+  build_package:
+    steps:
+      - run: yarn backend-client-api run build
+      - run: yarn components run build
+      - run: yarn modules run build
+
+##################################################################
+########### Declare CircleCI jobs used by workflow ###############
+##################################################################
+jobs:
+  # DEV
+  check_proper_branch_dev:
+    executor: default
+    steps:
+      - checkout
+      - check_proper_branch:
+          branch: dev
+  # UAT
+  check_proper_branch_uat:
+    executor: default
+    steps:
+      - checkout
+      - check_proper_branch:
+          branch: uat
+  # PRD
+  check_proper_branch_prd:
+    executor: default
+    steps:
+      - checkout
+      - check_proper_branch:
+          branch: master
+  echo:
+    executor: default
+    steps:
+      - run: echo "You're on proper branch !!"
+  ############ Validate all projects in workspace ############
+  lint_test_build:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - *restore_cache
+      - packages_npmrc_setup
+      - yarn_install
+      - run: yarn global add concurrently
+      - run: concurrently \
+          "yarn workspaces run lint" \
+          "yarn workspaces run test" \
+          "yarn workspaces run build"
+      - *save_cache
+
+  build_and_publish_minor:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - *restore_cache
+      - packages_npmrc_setup
+      - yarn_install
+      - build_package
+      - publish_packages:
+          semvar: minor
+          stage: release
+      - *save_cache
+
+  build_and_publish_patch:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - *restore_cache
+      - packages_npmrc_setup
+      - yarn_install
+      - build_package
+      - publish_packages:
+          semvar: patch
+          stage: release
+      - *save_cache
+
+  build_and_publish_major:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - *restore_cache
+      - packages_npmrc_setup
+      - yarn_install
+      - build_package
+      - publish_packages:
+          semvar: major
+          stage: release
+      - *save_cache
+
+  deploy_backend:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - packages_npmrc_setup
+      - gcloud_setup:
+          staging: ${STAGING}
+      - create_config_yaml:
+          template: $(pwd)/packages/backend/appengine/app.${APP_ENV}.yaml
+          config: $(pwd)/packages/backend/app.yaml
+      - run: cat $(pwd)/packages/backend/app.yaml
+      - run: yarn backend deploy
+
+  deploy_scoreup:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - packages_npmrc_setup
+      - gcloud_setup:
+          staging: ${STAGING}
+      - create_config_yaml:
+          template: $(pwd)/packages/scoreup/appengine/app.${APP_ENV}.yaml
+          config: $(pwd)/packages/scoreup/app.yaml
+      - run: cat $(pwd)/packages/scoreup/app.yaml
+      - run: yarn scoreup deploy
+
+  deploy_scoreup_admin:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - packages_npmrc_setup
+      - gcloud_setup:
+          staging: ${STAGING}
+      - create_config_yaml:
+          template: $(pwd)/packages/scoreup-admin/appengine/app.template.yaml
+          config: $(pwd)/packages/scoreup-admin/app.yaml
+      - run: cat $(pwd)/packages/scoreup-admin/app.yaml
+      - run: yarn scoreup-admin deploy
+
+  deploy_all:
+    executor: wisekingdom
+    steps:
+      - checkout
+      - packages_npmrc_setup
+      - gcloud_setup:
+          staging: ${STAGING}
+      - create_config_yaml:
+          template: $(pwd)/packages/scoreup/appengine/app.${APP_ENV}.yaml
+          config: $(pwd)/packages/scoreup/app.yaml
+      - run: cat $(pwd)/packages/scoreup/app.yaml
+      - create_config_yaml:
+          template: $(pwd)/packages/backend/appengine/app.${APP_ENV}.yaml
+          config: $(pwd)/packages/backend/app.yaml
+      - run: cat $(pwd)/packages/backend/app.yaml
+      - create_config_yaml:
+          template: $(pwd)/packages/scoreup-admin/appengine/app.template.yaml
+          config: $(pwd)/packages/scoreup-admin/app.yaml
+      - run: cat $(pwd)/packages/scoreup-admin/app.yaml
+      - run: yarn global add concurrently
+      - run: | 
+            concurrently \
+                "yarn backend deploy " \
+                "yarn scoreup deploy" \
+                "yarn scoreup-admin deploy"
+
+############################################
+########### CircleCI Workflows #############
+############################################
+workflows:
+  version: 2
+  # Publish minor version every night at 2 AM
+  scheduled_publish_dev:
+    triggers:
+      - schedule:
+          cron: "0 19 * * *" # Every 2 AM (GMT +7)
+          filters:
+            branches:
+              only:
+                - dev
+    jobs:
+      - build_and_publish_minor
+
+  scheduled_deploy_dev:
+    triggers:
+      - schedule:
+          cron: "30 19 * * *" # Every 2:30 AM (GMT +7)
+          filters:
+            branches:
+              only:
+                - dev
+    jobs:
+      - deploy_all:
+          <<: *context_dev
+  fastlane:
+    jobs:
+      - deploy_all:
+          <<: *context_dev
+          filters:
+            branches:
+              only:
+                - automate/fastlane
+  verify:
+    jobs:
+      - lint_test_build:
+          filters:
+            branches:
+              ignore:
+                - automate/fastlane
+                - dev
+                - uat
+                - master
+  publish:
+    jobs:
+      - publish_patch_approve:
+          type: approval
+          <<: *filters_dev
+
+      - build_and_publish_patch:
+          requires:
+            - publish_patch_approve
+          <<: *filters_dev
+
+      - publish_minor_approve:
+          type: approval
+          <<: *filters_dev
+
+      - build_and_publish_minor:
+          requires:
+            - publish_minor_approve
+          <<: *filters_dev
+
+      - publish_major_approve:
+          type: approval
+          <<: *filters_dev
+
+      - build_and_publish_major:
+          requires:
+            - publish_major_approve
+          <<: *filters_dev
+  deploy:
+    jobs:
+      #################################
+      ######### APPROVE DEV ###########
+      #################################
+      - backend_dev_approve:
+          type: approval
+          <<: *filters_only_release_tag
+      - scoreup_dev_approve:
+          type: approval
+          <<: *filters_only_release_tag
+      - scoreup_admin_dev_approve:
+          type: approval
+          <<: *filters_only_release_tag
+
+      #################################
+      ######### APPROVE UAT ###########
+      #################################
+      - backend_uat_approve:
+          type: approval
+          <<: *filters_uat
+      - scoreup_uat_approve:
+          type: approval
+          <<: *filters_uat
+      - scoreup_admin_uat_approve:
+          type: approval
+          <<: *filters_uat
+
+      #################################
+      ######### APPROVE PRD ###########
+      #################################
+      - backend_prd_approve:
+          type: approval
+          <<: *filters_prd
+      - scoreup_prd_approve:
+          type: approval
+          <<: *filters_prd
+      - scoreup_admin_prd_approve:
+          type: approval
+          <<: *filters_prd
+
+      #################################
+      ########## DEPLOY DEV ###########
+      #################################
+      - deploy_backend:
+          <<: *context_dev
+          <<: *filters_only_release_tag
+          requires:
+            - backend_dev_approve
+
+      - deploy_scoreup:
+          <<: *context_dev
+          <<: *filters_only_release_tag
+          requires:
+            - scoreup_dev_approve
+
+      - deploy_scoreup_admin:
+          <<: *context_dev
+          <<: *filters_only_release_tag
+          requires:
+            - scoreup_admin_dev_approve
+
+      #################################
+      ########## DEPLOY UAT ###########
+      #################################
+      - deploy_backend:
+          <<: *context_uat
+          <<: *filters_uat
+          requires:
+            - backend_uat_approve
+
+      - deploy_scoreup:
+          <<: *context_uat
+          <<: *filters_uat
+          requires:
+            - scoreup_uat_approve
+
+      - deploy_scoreup_admin:
+          <<: *context_uat
+          <<: *filters_uat
+          requires:
+            - scoreup_admin_uat_approve
+
+      #################################
+      ########## DEPLOY PRD ###########
+      #################################
+      - deploy_backend:
+          <<: *context_prd
+          <<: *filters_prd
+          requires:
+            - backend_prd_approve
+
+      - deploy_scoreup:
+          <<: *context_prd
+          <<: *filters_prd
+          requires:
+            - scoreup_prd_approve
+
+      - deploy_scoreup_admin:
+          <<: *context_prd
+          <<: *filters_prd
+          requires:
+            - scoreup_admin_prd_approve
